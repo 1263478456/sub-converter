@@ -1,12 +1,11 @@
 // ============================================================
 //  sub-web 前端补丁（兼容 Vue 2）
-//  用 MutationObserver 持续拦截，Vue 重渲染也能生效
+//  MutationObserver 持续拦截 + 精确删除
 // ============================================================
 
 (function () {
   "use strict";
 
-  // ---- ACL4SSR 远程配置列表 ----
   var ACL4SSR_CONFIGS = [
     {
       label: "ACL4SSR",
@@ -23,16 +22,11 @@
         { label: "ACL4SSR_Online_MultiPlatform 多平台版", value: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_MultiPlatform.ini" },
       ],
     },
-    {
-      label: "default",
-      options: [
+    { label: "default", options: [
         { label: "No-Urltest", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/universal/no-urltest.ini" },
         { label: "Urltest", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/universal/urltest.ini" },
-      ],
-    },
-    {
-      label: "customized",
-      options: [
+    ]},
+    { label: "customized", options: [
         { label: "Maying", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/customized/maying.ini" },
         { label: "Ytoo", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/customized/ytoo.ini" },
         { label: "FlowerCloud", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/customized/flowercloud.ini" },
@@ -40,11 +34,9 @@
         { label: "SoCloud", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/customized/socloud.ini" },
         { label: "ARK", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/customized/ark.ini" },
         { label: "ssrCloud", value: "https://cdn.jsdelivr.net/gh/SleepyHeeead/subconverter-config@master/remote-config/customized/ssrcloud.ini" },
-      ],
-    },
+    ]},
   ];
 
-  // ---- UA 预设 ----
   var UA_PRESETS = [
     { label: "clash.meta", value: "clash.meta" },
     { label: "ClashForAndroid/2.5.12", value: "ClashForAndroid/2.5.12" },
@@ -57,70 +49,62 @@
   ];
 
   var STORAGE_KEY_UA = "sub-converter-custom-ua";
-  function getUA() {
-    try { return localStorage.getItem(STORAGE_KEY_UA) || ""; } catch (e) { return ""; }
-  }
-  function saveUA(v) {
-    try { localStorage.setItem(STORAGE_KEY_UA, v); } catch (e) {}
-  }
+  function getUA() { try { return localStorage.getItem(STORAGE_KEY_UA) || ""; } catch (e) { return ""; } }
+  function saveUA(v) { try { localStorage.setItem(STORAGE_KEY_UA, v); } catch (e) {} }
 
-  // ---- 持续清理：用 MutationObserver 拦截 Vue 重渲染 ----
+  // ---- 防重入标志 ----
+  var cleaning = false;
+
+  // ---- 持续清理 ----
   function startCleaner() {
-    // 需要移除的标签文本列表
     var REMOVE_LABELS = ["后端地址", "订阅短链"];
 
     function clean() {
-      // 移除匹配标签的 form-item
-      var labels = document.querySelectorAll(".el-form-item__label");
-      labels.forEach(function (label) {
+      if (cleaning) return;
+      cleaning = true;
+
+      // 1. 移除匹配标签的 form-item
+      document.querySelectorAll(".el-form-item__label").forEach(function (label) {
         var text = (label.textContent || "").trim();
         for (var i = 0; i < REMOVE_LABELS.length; i++) {
           if (text.indexOf(REMOVE_LABELS[i]) !== -1) {
             var item = label.closest(".el-form-item");
-            if (item) item.remove();
+            if (item && item.parentNode) {
+              item.parentNode.removeChild(item);
+            }
             break;
           }
         }
       });
 
-      // 移除「生成短链接」按钮
-      var btns = document.querySelectorAll("button");
-      btns.forEach(function (btn) {
+      // 2. 精确移除「生成短链接」按钮（只删按钮本身，不删父容器）
+      document.querySelectorAll("button").forEach(function (btn) {
         if ((btn.textContent || "").indexOf("生成短链接") !== -1) {
-          var item = btn.closest(".el-form-item");
-          if (item) item.remove();
+          btn.parentNode.removeChild(btn);
         }
       });
+
+      cleaning = false;
     }
 
-    // 立即执行一次
     clean();
 
-    // 持续监听 DOM 变化
     var observer = new MutationObserver(function (mutations) {
-      var needClean = false;
       for (var i = 0; i < mutations.length; i++) {
         if (mutations[i].addedNodes.length > 0) {
-          needClean = true;
-          break;
+          clean();
+          return;
         }
       }
-      if (needClean) clean();
     });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // ---- 注入「自定义UA」 ----
+  // ---- 注入自定义UA ----
   function injectUA() {
     if (document.getElementById("custom-ua-field")) return;
-
-    var labels = document.querySelectorAll(".el-form-item__label");
     var remoteFormItem = null;
-    labels.forEach(function (label) {
+    document.querySelectorAll(".el-form-item__label").forEach(function (label) {
       if ((label.textContent || "").indexOf("远程配置") !== -1) {
         remoteFormItem = label.closest(".el-form-item");
       }
@@ -148,34 +132,26 @@
       '</div>';
 
     remoteFormItem.parentNode.insertBefore(div, remoteFormItem.nextSibling);
-
     document.getElementById("ua-preset").addEventListener("change", function () {
-      if (this.value) {
-        document.getElementById("ua-input").value = this.value;
-        saveUA(this.value);
-      }
+      if (this.value) { document.getElementById("ua-input").value = this.value; saveUA(this.value); }
     });
-    document.getElementById("ua-input").addEventListener("input", function () {
-      saveUA(this.value);
-    });
+    document.getElementById("ua-input").addEventListener("input", function () { saveUA(this.value); });
   }
 
   // ---- 替换远程配置 ----
   function patchConfig() {
     var app = document.getElementById("app");
     if (!app || !app.__vue__) return;
-    function walk(comp) {
-      if (comp.$data && comp.$data.options && comp.$data.options.remoteConfig) {
-        comp.$data.options.remoteConfig = ACL4SSR_CONFIGS;
-      }
-      if (comp.$children) comp.$children.forEach(walk);
+    function walk(c) {
+      if (c.$data && c.$data.options && c.$data.options.remoteConfig) c.$data.options.remoteConfig = ACL4SSR_CONFIGS;
+      if (c.$children) c.$children.forEach(walk);
     }
     walk(app.__vue__);
   }
 
   // ---- 拦截订阅链接追加 ua ----
   function interceptUA() {
-    var observer = new MutationObserver(function () {
+    new MutationObserver(function () {
       var ua = getUA();
       if (!ua) return;
       document.querySelectorAll("input[disabled], textarea[disabled]").forEach(function (el) {
@@ -185,19 +161,16 @@
           el.dispatchEvent(new Event("input", { bubbles: true }));
         }
       });
-    });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
   }
 
   // ---- 启动 ----
   function init() {
     startCleaner();
-    injectUA();
     patchConfig();
     interceptUA();
   }
 
-  // 多次尝试，确保 Vue 渲染完成后生效
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () {
       setTimeout(init, 300);
