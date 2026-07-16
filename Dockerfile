@@ -4,11 +4,11 @@
 #  前端为纯 HTML/JS，无任何框架依赖
 # ============================================================
 
-# ---- Stage 1: 基于官方 subconverter 镜像 ----
-FROM tindy2013/subconverter:latest
+# ---- Stage 1: 基于 SubConverter-Extended 镜像 ----
+FROM aethersailor/subconverter-extended:latest
 
 LABEL maintainer="lyb69177116"
-LABEL description="subconverter + lightweight frontend"
+LABEL description="SubConverter-Extended + lightweight frontend"
 LABEL org.opencontainers.image.source="https://github.com/1263478456/sub-converter"
 
 RUN apk add --no-cache nginx supervisor
@@ -17,7 +17,7 @@ RUN apk add --no-cache nginx supervisor
 COPY index.html /usr/share/nginx/html/index.html
 
 # ---- 配置文件放到二进制旁边 ----
-RUN cp /base/pref.example.yml /usr/bin/pref.yml && \
+RUN cp /base/pref.example.toml /usr/bin/pref.toml && \
     cp -r /base/base /usr/bin/base && \
     cp -r /base/snippets /usr/bin/snippets && \
     cp -r /base/config /usr/bin/config && \
