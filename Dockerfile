@@ -1,4 +1,4 @@
-# sc-commit: init
+# extended-digest: init
 # ============================================================
 #  SubConverter-Extended + 自定义前端 + Nginx
 #  nginx 用 musl 跑，subconverter 用 glibc 跑

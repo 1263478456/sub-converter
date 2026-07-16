@@ -1,7 +1,7 @@
 # ============================================================
-#  自动检测上游更新并重新构建
-#  每天北京时间 10:00 检查上游仓库是否有新 commit
-#  有更新时自动修改 Dockerfile 并触发构建
+#  自动检测上游 SubConverter-Extended 镜像更新并重新构建
+#  每天北京时间 10:00 检查上游镜像是否有新 digest
+#  有更新时自动构建并推送
 # ============================================================
 
 name: Auto Update
@@ -13,6 +13,7 @@ on:
 
 env:
   IMAGE_NAME: 1263478456/sub-converter
+  UPSTREAM_IMAGE: aethersailor/subconverter-extended
 
 jobs:
   check-and-build:
@@ -23,118 +24,73 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---- 检测 subconverter 最新 commit ----
-      - name: Check subconverter upstream
-        id: check_sc
+      # ---- 检测上游 Extended 镜像是否有新 digest ----
+      - name: Check upstream Extended image
+        id: check_upstream
         run: |
-          # 获取上游 master 最新 commit SHA（前 7 位）
-          LATEST=$(curl -sfL https://api.github.com/repos/tindy2013/subconverter/commits/master \
-            | jq -r '.sha[0:7]')
-          # 从 Dockerfile 注释读取上次记录的 commit
-          CURRENT=$(grep '# sc-commit:' Dockerfile 2>/dev/null \
+          # 获取上游 latest 镜像的 digest
+          LATEST_DIGEST=$(docker manifest inspect "${{ env.UPSTREAM_IMAGE }}:latest" \
+            | jq -r '.config.digest // .manifests[0].digest // empty' 2>/dev/null || echo "unknown")
+
+          # 从 Dockerfile 注释读取上次记录的 digest
+          CURRENT=$(grep '# extended-digest:' Dockerfile 2>/dev/null \
             | head -1 | sed 's/.*: //' || echo "unknown")
 
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "latest=$LATEST_DIGEST" >> $GITHUB_OUTPUT
           echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "subconverter: $CURRENT → $LATEST"
+          echo "upstream: $CURRENT → $LATEST_DIGEST"
 
-          if [ "$LATEST" != "$CURRENT" ]; then
+          if [ "$LATEST_DIGEST" != "$CURRENT" ] && [ "$LATEST_DIGEST" != "unknown" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
           else
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
 
-      # ---- 检测 sub-web 最新 commit ----
-      - name: Check sub-web upstream
-        id: check_sw
-        run: |
-          LATEST=$(curl -sfL https://api.github.com/repos/CareyWang/sub-web/commits/master \
-            | jq -r '.sha[0:7]')
-          CURRENT=$(grep '# subweb-commit:' Dockerfile 2>/dev/null \
-            | head -1 | sed 's/.*: //' || echo "unknown")
-
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "sub-web: $CURRENT → $LATEST"
-
-          if [ "$LATEST" != "$CURRENT" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      # ---- 决定是否需要构建 ----
-      - name: Decide
-        id: decide
-        run: |
-          if [ "${{ steps.check_sc.outputs.changed }}" = "true" ] || \
-             [ "${{ steps.check_sw.outputs.changed }}" = "true" ]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "🚀 Detected upstream changes, will rebuild"
-          else
-            echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "✅ No upstream changes, skip"
-          fi
-
-      # ---- 更新 Dockerfile 中的 commit 记录 ----
+      # ---- 更新 Dockerfile 中的 digest 记录 ----
       - name: Update Dockerfile metadata
-        if: steps.decide.outputs.should_build == 'true'
+        if: steps.check_upstream.outputs.changed == 'true'
         run: |
-          SC_COMMIT="${{ steps.check_sc.outputs.latest }}"
-          SW_COMMIT="${{ steps.check_sw.outputs.latest }}"
+          DIGEST="${{ steps.check_upstream.outputs.latest }}"
           DATE=$(date -u +%Y%m%d)
 
-          # 更新/插入 commit 记录注释
-          if grep -q '# sc-commit:' Dockerfile; then
-            sed -i "s/# sc-commit: .*/# sc-commit: $SC_COMMIT/" Dockerfile
+          if grep -q '# extended-digest:' Dockerfile; then
+            sed -i "s|# extended-digest: .*|# extended-digest: $DIGEST|" Dockerfile
           else
-            sed -i "1a # sc-commit: $SC_COMMIT" Dockerfile
+            sed -i "1a # extended-digest: $DIGEST" Dockerfile
           fi
 
-          if grep -q '# subweb-commit:' Dockerfile; then
-            sed -i "s/# subweb-commit: .*/# subweb-commit: $SW_COMMIT/" Dockerfile
-          else
-            sed -i "2a # subweb-commit: $SW_COMMIT" Dockerfile
-          fi
-
-          echo "Updated Dockerfile: sc=$SC_COMMIT sw=$SW_COMMIT"
+          echo "Updated Dockerfile: extended-digest=$DIGEST date=$DATE"
 
       # ---- 提交 Dockerfile 变更 ----
       - name: Commit changes
-        if: steps.decide.outputs.should_build == 'true'
+        if: steps.check_upstream.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Dockerfile
-          git diff --cached --quiet || git commit -m "auto: upstream update sc=${{ steps.check_sc.outputs.latest }} sw=${{ steps.check_sw.outputs.latest }}"
+          git diff --cached --quiet || git commit -m "auto: upstream extended update"
           git push
 
       # ---- 构建并推送镜像 ----
-      - name: Set up QEMU
-        if: steps.decide.outputs.should_build == 'true'
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
-        if: steps.decide.outputs.should_build == 'true'
+        if: steps.check_upstream.outputs.changed == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        if: steps.decide.outputs.should_build == 'true'
+        if: steps.check_upstream.outputs.changed == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        if: steps.decide.outputs.should_build == 'true'
+        if: steps.check_upstream.outputs.changed == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ steps.check_sc.outputs.latest }}
+          tags: ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -144,9 +100,10 @@ jobs:
         run: |
           echo "## 🔄 Auto Update Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| 组件 | 上游 commit | 本地记录 | 状态 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------------|---------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| subconverter | \`${{ steps.check_sc.outputs.latest }}\` | \`${{ steps.check_sc.outputs.current }}\` | ${{ steps.check_sc.outputs.changed == 'true' && '🆕 更新' || '✅ 无变化' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| sub-web | \`${{ steps.check_sw.outputs.latest }}\` | \`${{ steps.check_sw.outputs.current }}\` | ${{ steps.check_sw.outputs.changed == 'true' && '🆕 更新' || '✅ 无变化' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**构建**: ${{ steps.decide.outputs.should_build == 'true' && '✅ 已触发' || '⏭️ 跳过' }}" >> $GITHUB_STEP_SUMMARY
+          echo "| 项目 | 状态 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 上游镜像 | \`${{ env.UPSTREAM_IMAGE }}:latest\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 上游 digest | \`${{ steps.check_upstream.outputs.latest }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 本地记录 | \`${{ steps.check_upstream.outputs.current }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 有更新 | ${{ steps.check_upstream.outputs.changed }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 构建 | ${{ steps.check_upstream.outputs.changed == 'true' && '✅ 已触发' || '⏭️ 跳过' }} |" >> $GITHUB_STEP_SUMMARY
