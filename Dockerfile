@@ -2,24 +2,11 @@
 # subweb-commit: init
 # ============================================================
 #  All-in-One: subconverter + sub-web + Nginx
-#  从上游源码构建，自动跟踪最新代码
+#  从官方镜像提取二进制，从前端镜像提取静态文件
 # ============================================================
 
-# ---- Stage 1: 从源码编译 subconverter ----
-FROM alpine:3.20 AS builder
-
-RUN apk add --no-cache \
-    git cmake make g++ \
-    curl-dev yaml-cpp-dev \
-    zlib-dev libevent-dev \
-    pcre2-dev brotli-dev
-
-RUN git clone --depth=1 https://github.com/tindy2013/subconverter.git /src
-
-WORKDIR /src
-RUN cmake -DCMAKE_BUILD_TYPE=Release . && \
-    make -j$(nproc) && \
-    strip subconverter
+# ---- Stage 1: 从官方镜像获取 subconverter 二进制 ----
+FROM tindy2013/subconverter:latest AS subconverter
 
 # ---- Stage 2: 获取 sub-web 前端编译产物 ----
 FROM careywong/subweb:latest AS frontend
@@ -37,15 +24,13 @@ RUN apk add --no-cache \
     supervisor \
     libc6-compat \
     libstdc++ \
-    yaml-cpp \
-    libevent \
     pcre2 \
-    brotli \
-    sed
+    libcurl \
+    yaml-cpp
 
-# ---- 从 builder 拷贝编译产物 ----
-COPY --from=builder /src/subconverter /opt/subconverter/subconverter
-COPY --from=builder /src/base/ /opt/subconverter/base/
+# ---- 从 subconverter 官方镜像拷贝 ----
+COPY --from=subconverter /usr/bin/subconverter /opt/subconverter/subconverter
+COPY --from=subconverter /base/ /opt/subconverter/base/
 RUN chmod +x /opt/subconverter/subconverter
 
 # ---- 拷贝前端静态文件 ----
@@ -53,7 +38,7 @@ COPY --from=frontend /usr/share/nginx/html/ /usr/share/nginx/html/
 
 # ---- 修正前端默认后端地址 ----
 # sub-web 默认指向 api.wcc.best（作者公共后端）
-# 替换为相对路径 /sub?，走 Nginx 代理到本地后端
+# 替换为空，使后端地址变为 /sub?（相对路径，走 Nginx 代理到本地后端）
 RUN find /usr/share/nginx/html -name '*.js' -exec \
     sed -i 's|https://api\.wcc\.best||g' {} \;
 
