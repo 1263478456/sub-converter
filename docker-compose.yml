@@ -1,37 +1,24 @@
-# ============================================================
-#  SubConverter-Extended + SubWeb 订阅转换服务
-#  用法：
-#    1. mkdir -p ~/subconverter/base && cd ~/subconverter
-#    2. wget -O base/pref.toml https://raw.githubusercontent.com/Aethersailor/SubConverter-Extended@master/base/pref.example.toml
-#    3. docker compose up -d
-#    4. 访问 http://你的IP:8080
-# ============================================================
-
 version: '3.8'
 
 services:
-  # ---- 后端 ----
   subconverter:
     image: aethersailor/subconverter-extended:latest
     container_name: subconverter
     restart: unless-stopped
+    user: "950:950"
     ports:
-      - "25500:25500"
+      - "3216:25500"
     volumes:
-      - ./base:/base
+      - /mnt/vol3/appdata/subconverter/base:/base
     environment:
       - TZ=Asia/Shanghai
-      # 公网部署取消下面两行注释
-      # - SUBCONVERTER_SECURITY_PROFILE=public
-      # - SUBCONVERTER_ALLOW_PUBLIC_UPLOAD=false
 
-  # ---- 前端 ----
   subweb:
     image: aethersailor/subweb:latest
     container_name: subweb
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "3215:80"
     environment:
       - SITE_NAME=订阅转换
       - API_URL=http://subconverter:25500
