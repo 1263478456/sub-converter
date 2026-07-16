@@ -15,14 +15,14 @@ LABEL maintainer="lyb69177116"
 LABEL description="subconverter + sub-web All-in-One"
 LABEL org.opencontainers.image.source="https://github.com/1263478456/sub-converter"
 
-# 安装 Nginx + Supervisor
+# ---- 安装 Nginx + Supervisor ----
 RUN apk add --no-cache nginx supervisor
+
+# ---- 调试：列出 /base/ 目录内容 ----
+RUN ls -la /base/ && ls -la /base/base/ 2>/dev/null || true
 
 # ---- 拷贝前端静态文件 ----
 COPY --from=frontend /usr/share/nginx/html/ /usr/share/nginx/html/
-
-# ---- 使用官方默认配置 ----
-RUN cp /base/pref.example.ini /base/pref.ini
 
 # ---- 注入前端补丁 ----
 COPY patch.js /usr/share/nginx/html/patch.js
