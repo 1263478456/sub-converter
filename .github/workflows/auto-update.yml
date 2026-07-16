@@ -1,0 +1,152 @@
+# ============================================================
+#  自动检测上游更新并重新构建
+#  每天北京时间 10:00 检查上游仓库是否有新 commit
+#  有更新时自动修改 Dockerfile 并触发构建
+# ============================================================
+
+name: Auto Update
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # UTC 02:00 = 北京 10:00
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: 1263478456/sub-converter
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- 检测 subconverter 最新 commit ----
+      - name: Check subconverter upstream
+        id: check_sc
+        run: |
+          # 获取上游 master 最新 commit SHA（前 7 位）
+          LATEST=$(curl -sfL https://api.github.com/repos/tindy2013/subconverter/commits/master \
+            | jq -r '.sha[0:7]')
+          # 从 Dockerfile 注释读取上次记录的 commit
+          CURRENT=$(grep '# sc-commit:' Dockerfile 2>/dev/null \
+            | head -1 | sed 's/.*: //' || echo "unknown")
+
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "subconverter: $CURRENT → $LATEST"
+
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ---- 检测 sub-web 最新 commit ----
+      - name: Check sub-web upstream
+        id: check_sw
+        run: |
+          LATEST=$(curl -sfL https://api.github.com/repos/CareyWang/sub-web/commits/main \
+            | jq -r '.sha[0:7]')
+          CURRENT=$(grep '# subweb-commit:' Dockerfile 2>/dev/null \
+            | head -1 | sed 's/.*: //' || echo "unknown")
+
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "sub-web: $CURRENT → $LATEST"
+
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ---- 决定是否需要构建 ----
+      - name: Decide
+        id: decide
+        run: |
+          if [ "${{ steps.check_sc.outputs.changed }}" = "true" ] || \
+             [ "${{ steps.check_sw.outputs.changed }}" = "true" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "🚀 Detected upstream changes, will rebuild"
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "✅ No upstream changes, skip"
+          fi
+
+      # ---- 更新 Dockerfile 中的 commit 记录 ----
+      - name: Update Dockerfile metadata
+        if: steps.decide.outputs.should_build == 'true'
+        run: |
+          SC_COMMIT="${{ steps.check_sc.outputs.latest }}"
+          SW_COMMIT="${{ steps.check_sw.outputs.latest }}"
+          DATE=$(date -u +%Y%m%d)
+
+          # 更新/插入 commit 记录注释
+          if grep -q '# sc-commit:' Dockerfile; then
+            sed -i "s/# sc-commit: .*/# sc-commit: $SC_COMMIT/" Dockerfile
+          else
+            sed -i "1a # sc-commit: $SC_COMMIT" Dockerfile
+          fi
+
+          if grep -q '# subweb-commit:' Dockerfile; then
+            sed -i "s/# subweb-commit: .*/# subweb-commit: $SW_COMMIT/" Dockerfile
+          else
+            sed -i "2a # subweb-commit: $SW_COMMIT" Dockerfile
+          fi
+
+          echo "Updated Dockerfile: sc=$SC_COMMIT sw=$SW_COMMIT"
+
+      # ---- 提交 Dockerfile 变更 ----
+      - name: Commit changes
+        if: steps.decide.outputs.should_build == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Dockerfile
+          git diff --cached --quiet || git commit -m "auto: upstream update sc=${{ steps.check_sc.outputs.latest }} sw=${{ steps.check_sw.outputs.latest }}"
+          git push
+
+      # ---- 构建并推送镜像 ----
+      - name: Set up QEMU
+        if: steps.decide.outputs.should_build == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.decide.outputs.should_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: steps.decide.outputs.should_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.decide.outputs.should_build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ steps.check_sc.outputs.latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- 汇总报告 ----
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🔄 Auto Update Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 组件 | 上游 commit | 本地记录 | 状态 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------------|---------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| subconverter | \`${{ steps.check_sc.outputs.latest }}\` | \`${{ steps.check_sc.outputs.current }}\` | ${{ steps.check_sc.outputs.changed == 'true' && '🆕 更新' || '✅ 无变化' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| sub-web | \`${{ steps.check_sw.outputs.latest }}\` | \`${{ steps.check_sw.outputs.current }}\` | ${{ steps.check_sw.outputs.changed == 'true' && '🆕 更新' || '✅ 无变化' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**构建**: ${{ steps.decide.outputs.should_build == 'true' && '✅ 已触发' || '⏭️ 跳过' }}" >> $GITHUB_STEP_SUMMARY
